@@ -1,0 +1,27 @@
+import {describe,it,expect,beforeEach,afterEach} from 'vitest';
+import {Store} from '../src/server/db';
+import * as service from '../src/server/service';
+import {state} from '../src/server/repository';
+import type {User} from '../src/server/auth';
+let s:Store;
+const admin:User={id:1,username:'admin',name:'Admin Uji',role:'Admin'};
+const staff:User={id:2,username:'petugas',name:'Petugas Uji',role:'Petugas'};
+const allocation={year_id:1,category_id:1,title:'Alokasi uji',amount:'1000000000000'};
+const realization={allocation_id:1,date:'2026-11-12',amount:'333333333333',note:'Transaksi khusus uji'};
+beforeEach(()=>{s=new Store(':memory:');s.run("INSERT INTO users(id,username,name,role,password) VALUES(1,'admin','Admin Uji','Admin','tidak-dapat-login'),(2,'petugas','Petugas Uji','Petugas','tidak-dapat-login')");service.saveYear(s,{year:2026,published:false});service.saveCategory(s,{name:'Infrastruktur',type:'Belanja'});});
+afterEach(()=>s.close());
+describe('Anggaran, realisasi dan publikasi',()=>{
+ it('CRUD data induk dan alokasi; relasi yang dipakai dilindungi',()=>{
+  service.saveYear(s,{year:2027,published:false});service.saveYear(s,{year:2028,published:true},2);service.remove(s,'years',2,admin);
+  service.saveCategory(s,{name:'Cadangan',type:'Pendapatan'});service.saveCategory(s,{name:'Lainnya',type:'Pendapatan'},2);service.remove(s,'categories',2,admin);
+  service.saveAllocation(s,allocation);service.saveAllocation(s,{...allocation,title:'Diubah'},1);expect(state(s,new URLSearchParams()).allocations[0].title).toBe('Diubah');
+  expect(()=>service.remove(s,'years',1,admin)).toThrow();expect(()=>service.remove(s,'categories',1,admin)).toThrow();service.remove(s,'allocations',1,admin);expect(state(s,new URLSearchParams()).allocations).toHaveLength(0);
+ });
+ it('menghitung rupiah besar secara tepat dan sisa otomatis',()=>{service.saveAllocation(s,allocation);service.saveRealization(s,staff,realization);service.saveRealization(s,staff,{...realization,amount:'222222222222'});const data=state(s,new URLSearchParams());expect(data.summary.realized).toBe(555555555555);expect(data.summary.remaining).toBe(444444444445);expect(data.groups[0].realized).toBe(555555555555);});
+ it('menolak pecahan, negatif, tanggal di luar tahun dan jumlah melebihi sisa',()=>{for(const amount of ['1.1',-1,Number.MAX_SAFE_INTEGER+1])expect(()=>service.saveAllocation(s,{...allocation,amount})).toThrow();service.saveAllocation(s,{...allocation,amount:100});expect(()=>service.saveRealization(s,staff,{...realization,amount:101})).toThrow('melebihi');expect(()=>service.saveRealization(s,staff,{...realization,amount:1,date:'2027-01-01'})).toThrow('tahun anggaran');expect(()=>service.saveRealization(s,staff,{...realization,amount:1,date:'2026-02-30'})).toThrow();});
+ it('CRUD realisasi menjaga sisa dan kepemilikan petugas',()=>{service.saveAllocation(s,allocation);service.saveRealization(s,staff,realization);service.saveRealization(s,staff,{...realization,amount:100},1);expect(state(s,new URLSearchParams()).summary.realized).toBe(100);expect(()=>service.saveRealization(s,{...staff,id:999},{...realization,amount:1},1)).toThrow('sendiri');expect(()=>service.remove(s,'realizations',1,{...staff,id:999})).toThrow('sendiri');service.remove(s,'realizations',1,staff);expect(state(s,new URLSearchParams()).summary.remaining).toBe(1000000000000);});
+ it('menolak pengecilan/pemindahan alokasi dan perubahan jenis setelah realisasi',()=>{service.saveAllocation(s,allocation);service.saveRealization(s,staff,realization);expect(()=>service.saveAllocation(s,{...allocation,amount:1},1)).toThrow('lebih kecil');service.saveYear(s,{year:2027});expect(()=>service.saveAllocation(s,{...allocation,year_id:2},1)).toThrow('dipindahkan');expect(()=>service.saveCategory(s,{name:'Sama',type:'Pendapatan'},1)).toThrow('digunakan');expect(()=>service.saveYear(s,{year:2025},1)).toThrow('diganti');});
+ it('publik hanya menerima tahun terpilih tanpa detail transaksi internal',()=>{service.saveAllocation(s,allocation);service.saveRealization(s,staff,realization);expect(state(s,new URLSearchParams(),true).allocations).toHaveLength(0);service.saveYear(s,{year:2026,published:true},1);const data=state(s,new URLSearchParams(),true);expect(data.allocations).toHaveLength(1);expect(data.realizations).toEqual([]);expect(data.summary.realized).toBe(333333333333);expect(state(s,new URLSearchParams({category:'999'}),true).allocations).toEqual([]);});
+ it('pendapatan dan belanja dilaporkan terpisah serta filter bekerja',()=>{service.saveAllocation(s,{...allocation,amount:100});service.saveCategory(s,{name:'Pendapatan desa',type:'Pendapatan'});service.saveAllocation(s,{...allocation,category_id:2,title:'Penerimaan',amount:150});const all=state(s,new URLSearchParams());expect(all.summary.income).toBe(150);expect(all.summary.spending).toBe(100);expect(state(s,new URLSearchParams({category:'2'})).allocations).toHaveLength(1);});
+ it('rollback transaksi gagal dan integritas SQLite',()=>{service.saveAllocation(s,allocation);s.db.exec("CREATE TRIGGER refuse_realization BEFORE INSERT ON realizations BEGIN SELECT RAISE(ABORT,'Uji gagal'); END");expect(()=>service.saveRealization(s,staff,realization)).toThrow();expect(state(s,new URLSearchParams()).summary.realized).toBe(0);expect(s.all('PRAGMA foreign_key_check')).toEqual([]);expect(s.get<{integrity_check:string}>('PRAGMA integrity_check')?.integrity_check).toBe('ok');});
+});
