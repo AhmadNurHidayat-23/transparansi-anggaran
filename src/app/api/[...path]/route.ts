@@ -16,7 +16,7 @@ async function handle(r:Request,c:Context){try{
  const data=await payload(r);
  if(kind==='login'&&method==='POST')return login(s,r,data);
  const user=guard(s,r,kind==='realizations'||kind==='logout'?['Admin','Petugas']:['Admin']);
- if(kind==='logout'&&method==='POST'){s.run('DELETE FROM sessions WHERE token=?',user.token);return Response.json({message:'Anda telah keluar.'},{headers:{'Set-Cookie':'app_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'}});}
+ if(kind==='logout'&&method==='POST'){s.run('DELETE FROM sessions WHERE token=?',user.token);return Response.json({message:'Anda telah keluar.'},{headers:{'Set-Cookie':'transparansi_anggaran_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'}});}
  if(!['years','categories','allocations','realizations'].includes(kind))throw new AccessError('Alamat tidak tersedia.',404);
  const id=rawId?integer(rawId,'ID',1):0;
  if(method==='DELETE'&&id)service.remove(s,kind,id,user);
